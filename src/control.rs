@@ -15,13 +15,10 @@
  */
 
 // This module interact with DynamoDB Control Plane APIs
-use aws_sdk_dynamodb::{
-    types::{
-        BackupStatus, BackupSummary, BillingMode, CreateGlobalSecondaryIndexAction,
-        GlobalSecondaryIndexUpdate, Projection, ProjectionType, ProvisionedThroughput,
-        TableDescription,
-    },
-    Client as DynamoDbSdkClient,
+use aws_sdk_dynamodb::types::{
+    BackupStatus, BackupSummary, BillingMode, CreateGlobalSecondaryIndexAction,
+    GlobalSecondaryIndexUpdate, Projection, ProjectionType, ProvisionedThroughput,
+    TableDescription,
 };
 use aws_sdk_ec2::Client as Ec2SdkClient;
 use futures::future::join_all;
@@ -147,7 +144,7 @@ pub async fn describe_table(cx: &app::Context, target_table_to_desc: Option<Stri
 /// however it turned out that DescribeTable API result is useful in various logic, separated API into this standalone function.
 pub async fn describe_table_api(cx: &app::Context, table_name: String) -> TableDescription {
     let region = cx.effective_region().await;
-    let config = cx.effective_sdk_config_with_region(region.as_ref()).await;
+    let _config = cx.effective_sdk_config_with_region(region.as_ref()).await;
     let ddb = &cx.ddb_client;
 
     match ddb.describe_table().table_name(table_name).send().await {
@@ -589,7 +586,7 @@ Private functions
 /// Basically called by list_tables function, which is called from `$ dy list`.
 /// To make ListTables API result reusable, separated API logic into this standalone function.
 async fn list_tables_api(cx: &app::Context, override_region: Option<&str>) -> Vec<String> {
-    let config = if let Some(override_region) = override_region {
+    let _config = if let Some(override_region) = override_region {
         cx.effective_sdk_config_with_region(override_region).await
     } else {
         cx.effective_sdk_config().await

@@ -199,10 +199,10 @@ see https://github.com/awslabs/dynein#working-with-dynamodb-items for detail
             }
         } // 'batch loop
         request_items.insert("Movie".to_string(), write_requests);
-        batch::batch_write_until_processed(cx, request_items).await?;
+        batch::batch_write_until_processed(cx, request_items, None).await?;
     } // 'whole loop
     request_items.insert("Movie".to_string(), write_requests);
-    batch::batch_write_until_processed(cx, request_items).await?;
+    batch::batch_write_until_processed(cx, request_items, None).await?;
 
     Ok(())
 }
@@ -261,7 +261,7 @@ https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/AppendixSampleT
         decompressor.read_to_string(&mut content)?;
         // Step 4. load data into tables
         let request_items = batch::build_batch_request_items_from_json(content.to_string())?;
-        batch::batch_write_until_processed(cx, request_items).await?;
+        batch::batch_write_until_processed(cx, request_items, None).await?;
     }
 
     let region = cx.effective_region().await.to_string();

@@ -30,7 +30,7 @@ use serde_json::{de::StrRead, Deserializer, StreamDeserializer, Value as JsonVal
 
 use aws_sdk_dynamodb::{
     operation::scan::ScanOutput,
-    types::{AttributeValue, WriteRequest},
+    types::{AttributeValue, TableDescription, WriteRequest},
 };
 use thiserror::Error;
 
@@ -295,6 +295,7 @@ pub async fn import(
     input_file: String,
     format: Option<String>,
     enable_set_inference: bool,
+    consider_capacity: bool,
 ) -> Result<(), batch::DyneinBatchError> {
     let format_str: Option<&str> = format.as_deref();
 
@@ -314,11 +315,27 @@ pub async fn import(
         std::process::exit(1);
     };
 
+    let mut capacity_limiter = if consider_capacity && matches!(&ts.mode, table::Mode::Provisioned)
+    {
+        let desc: TableDescription =
+            crate::control::describe_table_api(cx, ts.name.to_owned()).await;
+        desc.provisioned_throughput
+            .and_then(|t| t.write_capacity_units)
+            .and_then(batch::CapacityLimiter::new_from_units)
+    } else {
+        None
+    };
+
     match format_str {
         None | Some("json") | Some("json-compact") => {
             let array_of_json_obj: Vec<JsonValue> = serde_json::from_str(&input_string)?;
-            write_array_of_jsons_with_chunked_25(cx, array_of_json_obj, enable_set_inference)
-                .await?;
+            write_array_of_jsons_with_chunked_25(
+                cx,
+                array_of_json_obj,
+                enable_set_inference,
+                &mut capacity_limiter,
+            )
+            .await?;
         }
         Some("jsonl") => {
             // JSON Lines can be deserialized with into_iter() as below.
@@ -327,8 +344,13 @@ pub async fn import(
             // list_of_jsons contains deserialize results. Filter them and get only valid items.
             let array_of_valid_json_obj: Vec<JsonValue> =
                 array_of_json_obj.filter_map(Result::ok).collect();
-            write_array_of_jsons_with_chunked_25(cx, array_of_valid_json_obj, enable_set_inference)
-                .await?;
+            write_array_of_jsons_with_chunked_25(
+                cx,
+                array_of_valid_json_obj,
+                enable_set_inference,
+                &mut capacity_limiter,
+            )
+            .await?;
         }
         Some("csv") => {
             let lines: Vec<&str> = input_string
@@ -346,7 +368,14 @@ pub async fn import(
                 debug!("splitted line => {:?}", cells);
                 matrix.push(cells);
                 if i % 25 == 0 {
-                    write_csv_matrix(cx, &matrix, &headers, enable_set_inference).await?;
+                    write_csv_matrix(
+                        cx,
+                        &matrix,
+                        &headers,
+                        enable_set_inference,
+                        &mut capacity_limiter,
+                    )
+                    .await?;
                     progress_status.add_observation(25);
                     progress_status.show();
                     matrix.clear();
@@ -354,7 +383,14 @@ pub async fn import(
             }
             debug!("rest of matrix => {:?}", matrix);
             if !matrix.is_empty() {
-                write_csv_matrix(cx, &matrix, &headers, enable_set_inference).await?;
+                write_csv_matrix(
+                    cx,
+                    &matrix,
+                    &headers,
+                    enable_set_inference,
+                    &mut capacity_limiter,
+                )
+                .await?;
                 progress_status.add_observation(matrix.len());
                 progress_status.show();
             }
@@ -545,13 +581,14 @@ async fn write_array_of_jsons_with_chunked_25(
     cx: &app::Context,
     array_of_json_obj: Vec<JsonValue>,
     enable_set_inference: bool,
+    capacity_limiter: &mut Option<batch::CapacityLimiter>,
 ) -> Result<(), batch::DyneinBatchError> {
     let mut progress_status = ProgressState::new(MAX_NUMBER_OF_OBSERVES);
     for chunk /* Vec<JsonValue> */ in array_of_json_obj.chunks(25) { // As BatchWriteItem request can have up to 25 items.
         let items = chunk.to_vec();
         let count = items.len();
         let request_items: HashMap<String, Vec<WriteRequest>> = batch::convert_jsonvals_to_request_items(cx, items, enable_set_inference).await?;
-        batch::batch_write_until_processed(cx, request_items).await?;
+        batch::batch_write_until_processed(cx, request_items, capacity_limiter.as_mut()).await?;
         progress_status.add_observation(count);
         progress_status.show();
     }
@@ -571,10 +608,11 @@ async fn write_csv_matrix(
     matrix: &[Vec<&str>],
     headers: &[&str],
     enable_set_inference: bool,
+    capacity_limiter: &mut Option<batch::CapacityLimiter>,
 ) -> Result<(), batch::DyneinBatchError> {
     let request_items: HashMap<String, Vec<WriteRequest>> =
         batch::csv_matrix_to_request_items(cx, matrix, headers, enable_set_inference).await?;
-    batch::batch_write_until_processed(cx, request_items).await?;
+    batch::batch_write_until_processed(cx, request_items, capacity_limiter.as_mut()).await?;
     Ok(())
 }
 

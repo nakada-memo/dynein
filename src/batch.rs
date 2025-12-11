@@ -18,13 +18,13 @@ use crate::parser::DyneinParser;
 use aws_sdk_dynamodb::{
     operation::batch_write_item::BatchWriteItemError,
     types::{AttributeValue, DeleteRequest, PutRequest, WriteRequest},
-    Client as DynamoDbSdkClient,
 };
 use base64::{engine::general_purpose, Engine as _};
 use bytes::Bytes;
 use log::{debug, error};
 use serde_json::Value as JsonValue;
 use std::{collections::HashMap, error, fmt, fs, io::Error as IOError};
+use tokio::time::{sleep, Duration};
 
 use super::app;
 use super::data;
@@ -90,6 +90,61 @@ impl From<dialoguer::Error> for DyneinBatchError {
     fn from(e: dialoguer::Error) -> Self {
         match e {
             dialoguer::Error::IO(e) => Self::LoadData(e),
+        }
+    }
+}
+
+pub struct CapacityLimiter {
+    wcu_per_second: f64,
+    available_capacity: f64,
+    last_refilled_at: std::time::Instant,
+}
+
+impl CapacityLimiter {
+    pub fn new_from_units(units: i64) -> Option<Self> {
+        if units > 0 {
+            Some(Self::new(units as f64))
+        } else {
+            None
+        }
+    }
+
+    pub fn new(units: f64) -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            wcu_per_second: units,
+            available_capacity: units,
+            last_refilled_at: now,
+        }
+    }
+
+    fn refill(&mut self) {
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(self.last_refilled_at).as_secs_f64();
+        if elapsed > 0.0 {
+            let replenished = elapsed * self.wcu_per_second;
+            self.available_capacity =
+                (self.available_capacity + replenished).min(self.wcu_per_second);
+            self.last_refilled_at = now;
+        }
+    }
+
+    pub async fn consume(&mut self, consumed_units: f64) {
+        if consumed_units <= 0.0 {
+            return;
+        }
+
+        loop {
+            self.refill();
+
+            if self.available_capacity >= consumed_units {
+                self.available_capacity -= consumed_units;
+                break;
+            }
+
+            let deficit = consumed_units - self.available_capacity;
+            let sleep_seconds = (deficit / self.wcu_per_second).max(0.01);
+            sleep(Duration::from_secs_f64(sleep_seconds)).await;
         }
     }
 }
@@ -221,8 +276,12 @@ pub fn build_batch_request_items_from_json(
 async fn batch_write_item_api(
     cx: &app::Context,
     request_items: HashMap<String, Vec<WriteRequest>>,
+    return_consumed_capacity: bool,
 ) -> Result<
-    Option<HashMap<String, Vec<WriteRequest>>>,
+    (
+        Option<HashMap<String, Vec<WriteRequest>>>,
+        Vec<aws_sdk_dynamodb::types::ConsumedCapacity>,
+    ),
     aws_sdk_dynamodb::error::SdkError<BatchWriteItemError>,
 > {
     debug!(
@@ -234,19 +293,25 @@ async fn batch_write_item_api(
         .retry
         .as_ref()
         .map(|v| v.batch_write_item.as_ref().unwrap_or(&v.default));
-    let config = cx
+    let _config = cx
         .effective_sdk_config_with_retry(retry_config.cloned())
         .await;
 
     let ddb = &cx.ddb_client;
 
-    match ddb
+    let mut api = ddb
         .batch_write_item()
-        .set_request_items(Some(request_items))
-        .send()
-        .await
-    {
-        Ok(res) => Ok(res.unprocessed_items),
+        .set_request_items(Some(request_items));
+
+    if return_consumed_capacity {
+        api = api.return_consumed_capacity(aws_sdk_dynamodb::types::ReturnConsumedCapacity::Total);
+    }
+
+    match api.send().await {
+        Ok(res) => Ok((
+            res.unprocessed_items,
+            res.consumed_capacity.unwrap_or_default(),
+        )),
         Err(e) => Err(e),
     }
 }
@@ -256,22 +321,32 @@ async fn batch_write_item_api(
 pub async fn batch_write_until_processed(
     cx: &app::Context,
     mut request_items: HashMap<String, Vec<WriteRequest>>,
+    mut capacity_limiter: Option<&mut CapacityLimiter>,
 ) -> Result<(), aws_sdk_dynamodb::error::SdkError<BatchWriteItemError>> {
     loop {
-        request_items = match batch_write_item_api(cx, request_items).await {
-            Ok(result) => {
-                let unprocessed_items: HashMap<String, Vec<WriteRequest>> =
-                    result.expect("alwasy wrapped by Some");
-                if !unprocessed_items.is_empty() {
-                    // if there are any unprocessed items, retry rest items
-                    debug!("UnprocessedItems: {:?}", &unprocessed_items);
-                    unprocessed_items
-                } else {
-                    return Ok(());
+        request_items =
+            match batch_write_item_api(cx, request_items, capacity_limiter.is_some()).await {
+                Ok((unprocessed, consumed_capacity)) => {
+                    if let Some(limiter) = capacity_limiter.as_deref_mut() {
+                        let total_consumed: f64 = consumed_capacity
+                            .iter()
+                            .filter_map(|c| c.capacity_units)
+                            .sum();
+                        limiter.consume(total_consumed).await;
+                    }
+
+                    let unprocessed_items: HashMap<String, Vec<WriteRequest>> =
+                        unprocessed.expect("alwasy wrapped by Some");
+                    if !unprocessed_items.is_empty() {
+                        // if there are any unprocessed items, retry rest items
+                        debug!("UnprocessedItems: {:?}", &unprocessed_items);
+                        unprocessed_items
+                    } else {
+                        return Ok(());
+                    }
                 }
+                Err(e) => return Err(e),
             }
-            Err(e) => return Err(e),
-        }
     }
 }
 
@@ -347,7 +422,7 @@ pub async fn batch_write_item(
     }
 
     debug!("built items for batch: {:?}", bwrite_items);
-    batch_write_item_api(cx, bwrite_items).await?;
+    batch_write_item_api(cx, bwrite_items, false).await?;
     Ok(())
 }
 
