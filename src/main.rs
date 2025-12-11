@@ -228,6 +228,7 @@ async fn dispatch(context: &mut app::Context, subcommand: cmd::Sub) -> Result<()
             format,
             enable_set_inference,
             consider_capacity,
+            capacity_usage,
         } => {
             transfer::import(
                 context,
@@ -235,6 +236,7 @@ async fn dispatch(context: &mut app::Context, subcommand: cmd::Sub) -> Result<()
                 format,
                 enable_set_inference,
                 consider_capacity,
+                capacity_usage,
             )
             .await?
         }

@@ -101,19 +101,20 @@ pub struct CapacityLimiter {
 }
 
 impl CapacityLimiter {
-    pub fn new_from_units(units: i64) -> Option<Self> {
-        if units > 0 {
-            Some(Self::new(units as f64))
+    pub fn new_from_units(units: i64, utilization: f64) -> Option<Self> {
+        if units > 0 && utilization > 0.0 {
+            Some(Self::new(units as f64, utilization))
         } else {
             None
         }
     }
 
-    pub fn new(units: f64) -> Self {
+    pub fn new(units: f64, utilization: f64) -> Self {
         let now = std::time::Instant::now();
+        let wcu_per_second = units * utilization;
         Self {
-            wcu_per_second: units,
-            available_capacity: units,
+            wcu_per_second,
+            available_capacity: wcu_per_second,
             last_refilled_at: now,
         }
     }

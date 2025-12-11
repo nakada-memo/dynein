@@ -386,6 +386,11 @@ pub enum Sub {
         /// This option is ignored for tables in on-demand mode.
         #[clap(long, verbatim_doc_comment)]
         consider_capacity: bool,
+
+        /// Percentage of provisioned write capacity to consume when throttling batch writes.
+        /// Values must be between 1 and 100. Implicitly enables --consider-capacity.
+        #[clap(long, value_parser = clap::value_parser!(u8).range(1..=100), verbatim_doc_comment)]
+        capacity_usage: Option<u8>,
     },
 
     /// Take backup of a DynamoDB table using on-demand backup

@@ -296,6 +296,7 @@ pub async fn import(
     format: Option<String>,
     enable_set_inference: bool,
     consider_capacity: bool,
+    capacity_usage: Option<u8>,
 ) -> Result<(), batch::DyneinBatchError> {
     let format_str: Option<&str> = format.as_deref();
 
@@ -315,13 +316,16 @@ pub async fn import(
         std::process::exit(1);
     };
 
-    let mut capacity_limiter = if consider_capacity && matches!(&ts.mode, table::Mode::Provisioned)
+    let use_capacity_limit = consider_capacity || capacity_usage.is_some();
+
+    let mut capacity_limiter = if use_capacity_limit && matches!(&ts.mode, table::Mode::Provisioned)
     {
         let desc: TableDescription =
             crate::control::describe_table_api(cx, ts.name.to_owned()).await;
+        let utilization = f64::from(capacity_usage.unwrap_or(100)) / 100.0;
         desc.provisioned_throughput
             .and_then(|t| t.write_capacity_units)
-            .and_then(batch::CapacityLimiter::new_from_units)
+            .and_then(|units| batch::CapacityLimiter::new_from_units(units, utilization))
     } else {
         None
     };
