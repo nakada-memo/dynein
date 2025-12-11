@@ -381,6 +381,10 @@ pub enum Sub {
         /// Enable type inference for set types. This option is provided for backward compatibility.
         #[clap(long)]
         enable_set_inference: bool,
+
+        /// Throttle writes based on provisioned capacity when the target table is in Provisioned mode.
+        #[clap(long, verbatim_doc_comment)]
+        consider_capacity: bool,
     },
 
     /// Take backup of a DynamoDB table using on-demand backup

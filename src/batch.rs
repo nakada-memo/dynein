@@ -17,14 +17,20 @@
 use crate::parser::DyneinParser;
 use aws_sdk_dynamodb::{
     operation::batch_write_item::BatchWriteItemError,
-    types::{AttributeValue, DeleteRequest, PutRequest, WriteRequest},
+    types::{AttributeValue, ConsumedCapacity, DeleteRequest, PutRequest, WriteRequest},
     Client as DynamoDbSdkClient,
 };
 use base64::{engine::general_purpose, Engine as _};
 use bytes::Bytes;
 use log::{debug, error};
 use serde_json::Value as JsonValue;
-use std::{collections::HashMap, error, fmt, fs, io::Error as IOError};
+use std::{
+    collections::HashMap,
+    error, fmt, fs,
+    io::Error as IOError,
+    time::{Duration, Instant},
+};
+use tokio::time::sleep;
 
 use super::app;
 use super::data;
@@ -61,6 +67,57 @@ impl error::Error for DyneinBatchError {
             DyneinBatchError::BatchWriteError(ref e) => Some(e),
             DyneinBatchError::InvalidInput(_) => None,
             DyneinBatchError::ParseError(_) => None,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct CapacityLimiter {
+    rate: f64,
+    burst: f64,
+    tokens: f64,
+    last_updated: Instant,
+}
+
+impl CapacityLimiter {
+    pub fn new(rate: f64) -> Self {
+        let burst = rate.max(1.0);
+        Self {
+            rate: rate.max(1.0),
+            burst,
+            tokens: burst,
+            last_updated: Instant::now(),
+        }
+    }
+
+    fn refill(&mut self) {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_updated).as_secs_f64();
+        if elapsed > 0.0 {
+            let added = elapsed * self.rate;
+            self.tokens = (self.tokens + added).min(self.burst);
+            self.last_updated = now;
+        }
+    }
+
+    pub async fn consume(&mut self, units: f64) {
+        if units <= 0.0 {
+            return;
+        }
+
+        let mut remaining = units;
+        while remaining > 0.0 {
+            self.refill();
+            if self.tokens > 0.0 {
+                let take = remaining.min(self.tokens);
+                self.tokens -= take;
+                remaining -= take;
+            }
+
+            if remaining > 0.0 {
+                let wait = remaining / self.rate;
+                sleep(Duration::from_secs_f64(wait)).await;
+            }
         }
     }
 }
@@ -218,13 +275,16 @@ pub fn build_batch_request_items_from_json(
 /// > the failed operations are returned in the UnprocessedItems response parameter.
 /// > You can investigate and optionally resend the requests. Typically, you would call BatchWriteItem in a loop. Each iteration would
 /// > check for unprocessed items and submit a new BatchWriteItem request with those unprocessed items until all items have been processed.
+struct BatchWriteOutcome {
+    unprocessed_items: HashMap<String, Vec<WriteRequest>>,
+    consumed_capacity: Option<Vec<ConsumedCapacity>>,
+}
+
 async fn batch_write_item_api(
     cx: &app::Context,
     request_items: HashMap<String, Vec<WriteRequest>>,
-) -> Result<
-    Option<HashMap<String, Vec<WriteRequest>>>,
-    aws_sdk_dynamodb::error::SdkError<BatchWriteItemError>,
-> {
+    return_consumed_capacity: bool,
+) -> Result<BatchWriteOutcome, aws_sdk_dynamodb::error::SdkError<BatchWriteItemError>> {
     debug!(
         "Calling BatchWriteItem API with request_items: {:?}",
         &request_items
@@ -243,10 +303,17 @@ async fn batch_write_item_api(
     match ddb
         .batch_write_item()
         .set_request_items(Some(request_items))
+        .set_return_consumed_capacity(
+            return_consumed_capacity
+                .then_some(aws_sdk_dynamodb::types::ReturnConsumedCapacity::Total),
+        )
         .send()
         .await
     {
-        Ok(res) => Ok(res.unprocessed_items),
+        Ok(res) => Ok(BatchWriteOutcome {
+            unprocessed_items: res.unprocessed_items.unwrap_or_default(),
+            consumed_capacity: res.consumed_capacity,
+        }),
         Err(e) => Err(e),
     }
 }
@@ -256,23 +323,36 @@ async fn batch_write_item_api(
 pub async fn batch_write_until_processed(
     cx: &app::Context,
     mut request_items: HashMap<String, Vec<WriteRequest>>,
+    capacity_limiter: &mut Option<CapacityLimiter>,
 ) -> Result<(), aws_sdk_dynamodb::error::SdkError<BatchWriteItemError>> {
     loop {
-        request_items = match batch_write_item_api(cx, request_items).await {
-            Ok(result) => {
-                let unprocessed_items: HashMap<String, Vec<WriteRequest>> =
-                    result.expect("alwasy wrapped by Some");
-                if !unprocessed_items.is_empty() {
-                    // if there are any unprocessed items, retry rest items
-                    debug!("UnprocessedItems: {:?}", &unprocessed_items);
-                    unprocessed_items
-                } else {
-                    return Ok(());
+        request_items =
+            match batch_write_item_api(cx, request_items, capacity_limiter.is_some()).await {
+                Ok(result) => {
+                    if let Some(ref mut limiter) = capacity_limiter {
+                        if let Some(consumed) = result.consumed_capacity.as_ref() {
+                            limiter.consume(total_consumed_capacity(consumed)).await;
+                        }
+                    }
+
+                    if !result.unprocessed_items.is_empty() {
+                        // if there are any unprocessed items, retry rest items
+                        debug!("UnprocessedItems: {:?}", &result.unprocessed_items);
+                        result.unprocessed_items
+                    } else {
+                        return Ok(());
+                    }
                 }
+                Err(e) => return Err(e),
             }
-            Err(e) => return Err(e),
-        }
     }
+}
+
+fn total_consumed_capacity(capacities: &[ConsumedCapacity]) -> f64 {
+    capacities
+        .iter()
+        .filter_map(|capacity| capacity.capacity_units)
+        .sum()
 }
 
 /// This function is intended to be called from main.rs, as a destination of bwrite command.
@@ -347,7 +427,7 @@ pub async fn batch_write_item(
     }
 
     debug!("built items for batch: {:?}", bwrite_items);
-    batch_write_item_api(cx, bwrite_items).await?;
+    batch_write_item_api(cx, bwrite_items, false).await?;
     Ok(())
 }
 

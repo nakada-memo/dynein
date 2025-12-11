@@ -30,6 +30,9 @@ Options:
       --enable-set-inference
           Enable type inference for set types. This option is provided for backward compatibility
 
+      --consider-capacity
+          Throttle writes based on provisioned capacity when the target table is in Provisioned mode.
+
   -r, --region <REGION>
           The region to use (e.g. --region us-east-1). When using DynamodB Local, use `--region local`.
           You can use --region option in both top-level and subcommand-level.
@@ -72,6 +75,9 @@ Options:
 
       --enable-set-inference
           Enable type inference for set types. This option is provided for backward compatibility
+
+      --consider-capacity
+          Throttle writes based on provisioned capacity when the target table is in Provisioned mode.
 
   -r, --region <REGION>
           The region to use (e.g. --region us-east-1). When using DynamodB Local, use `--region local`.
