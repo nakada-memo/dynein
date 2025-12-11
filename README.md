@@ -1153,6 +1153,8 @@ To import data into a table, you use with specified `--format` option. Here defa
 $ dy import --table target_movie --format json --input-file movie.json
 ```
 
+When the target table uses provisioned capacity, you can ask dynein to throttle batch writes based on the table's write capacity units by adding `--consider-capacity`. Pass `--capacity-usage` with a value between 1 and 100 to cap imports to a percentage of the table's provisioned write capacity. These options are ignored for on-demand tables.
+
 #### Enable set type inference
 
 Dynein provides the type inference for set types (number set, string set) for backward compatibility.

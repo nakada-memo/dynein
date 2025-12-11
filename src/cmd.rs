@@ -381,6 +381,16 @@ pub enum Sub {
         /// Enable type inference for set types. This option is provided for backward compatibility.
         #[clap(long)]
         enable_set_inference: bool,
+
+        /// Wait between batch writes based on the table's provisioned write capacity.
+        /// This option is ignored for tables in on-demand mode.
+        #[clap(long, verbatim_doc_comment)]
+        consider_capacity: bool,
+
+        /// Percentage of provisioned write capacity to consume when throttling batch writes.
+        /// Values must be between 1 and 100. Implicitly enables --consider-capacity.
+        #[clap(long, value_parser = clap::value_parser!(u8).range(1..=100), verbatim_doc_comment)]
+        capacity_usage: Option<u8>,
     },
 
     /// Take backup of a DynamoDB table using on-demand backup

@@ -27,7 +27,6 @@ use crate::parser::{AttributeDefinition, AttributeType, DyneinParser, ParseError
 use aws_sdk_dynamodb::{
     operation::scan::ScanOutput,
     types::{AttributeValue, ReturnValue},
-    Client as DynamoDbSdkClient,
 };
 use log::{debug, error};
 use serde::{ser::SerializeStruct, Serialize, Serializer};

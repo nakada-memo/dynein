@@ -30,6 +30,14 @@ Options:
       --enable-set-inference
           Enable type inference for set types. This option is provided for backward compatibility
 
+      --consider-capacity
+          Wait between batch writes based on the table's provisioned write capacity.
+          This option is ignored for tables in on-demand mode.
+
+      --capacity-usage <CAPACITY_USAGE>
+          Percentage of provisioned write capacity to consume when throttling batch writes.
+          Values must be between 1 and 100. Implicitly enables --consider-capacity.
+
   -r, --region <REGION>
           The region to use (e.g. --region us-east-1). When using DynamodB Local, use `--region local`.
           You can use --region option in both top-level and subcommand-level.
@@ -72,6 +80,14 @@ Options:
 
       --enable-set-inference
           Enable type inference for set types. This option is provided for backward compatibility
+
+      --consider-capacity
+          Wait between batch writes based on the table's provisioned write capacity.
+          This option is ignored for tables in on-demand mode.
+
+      --capacity-usage <CAPACITY_USAGE>
+          Percentage of provisioned write capacity to consume when throttling batch writes.
+          Values must be between 1 and 100. Implicitly enables --consider-capacity.
 
   -r, --region <REGION>
           The region to use (e.g. --region us-east-1). When using DynamodB Local, use `--region local`.
