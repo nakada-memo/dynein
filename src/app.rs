@@ -25,6 +25,7 @@ use aws_smithy_types::error::metadata::ProvideErrorMetadata;
 use log::{debug, error, info};
 use serde_yaml::Error as SerdeYAMLError;
 use std::convert::{TryFrom, TryInto};
+use std::sync::Arc;
 use std::time::Duration;
 use std::{
     collections::HashMap,
@@ -34,7 +35,6 @@ use std::{
     io::Error as IOError,
     path,
 };
-use std::sync::Arc;
 use tempfile::NamedTempFile;
 use thiserror::Error;
 
@@ -789,9 +789,14 @@ mod tests {
     use super::*;
     use std::convert::TryInto;
     use std::error::Error;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_context_functions() -> Result<(), Box<dyn Error>> {
+        let ddb_client = Arc::new(DynamoDbSdkClient::new(
+            &aws_config::load_defaults(BehaviorVersion::v2024_03_28()).await,
+        ));
+
         let cx1 = Context {
             config: None,
             cache: None,
@@ -801,6 +806,7 @@ mod tests {
             output: None,
             should_strict_for_query: None,
             retry: None,
+            ddb_client: ddb_client.clone(),
         };
         assert_eq!(
             &cx1.effective_region().await,
@@ -826,6 +832,7 @@ mod tests {
             output: None,
             should_strict_for_query: None,
             retry: Some(RetrySettingGlobal::default().try_into()?),
+            ddb_client: ddb_client.clone(),
         };
         assert_eq!(
             cx2.effective_region().await,
